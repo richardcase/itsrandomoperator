@@ -18,15 +18,17 @@ package randomparagraphapp
 import (
 	"context"
 	"log"
-	"reflect"
+	"sort"
 
 	randomv1alpha1 "github.com/richardcase/itsrandomoperator/pkg/apis/random/v1alpha1"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	intstr "k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -34,6 +36,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+)
+
+const (
+	appName  = "random-paragraph-ws"
+	appLabel = "app"
+	rpaLabel = "rpa-name"
 )
 
 /**
@@ -85,6 +93,10 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
+	//mgr.GetCache().IndexField(&corev1.Pod{}, "status.phase", func(obj runtime.Object) []string {
+	//	pod := obj.(corev1.Pod)
+	//})
+
 	return nil
 }
 
@@ -98,8 +110,6 @@ type ReconcileRandomParagraphApp struct {
 
 // Reconcile reads that state of the cluster for a RandomParagraphApp object and makes changes based on the state read
 // and what is in the RandomParagraphApp.Spec
-// TODO(user): Modify this Reconcile function to implement your Controller logic.  The scaffolding writes
-// a Deployment as an example
 // Automatically generate RBAC rules to allow the Controller to read and write Deployments
 // +kubebuilder:rbac:groups=,resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=,resources=services,verbs=get;list;watch;create;update;patch;delete
@@ -118,57 +128,173 @@ func (r *ReconcileRandomParagraphApp) Reconcile(request reconcile.Request) (reco
 		return reconcile.Result{}, err
 	}
 
-	// TODO(user): Change this to be the object type created by your controller
-	// Define the desired Deployment object
-	deploy := &appsv1.Deployment{
+	err = r.handleService(instance)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	err = r.handlePods(instance)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	return reconcile.Result{}, nil
+}
+
+func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParagraphApp) error {
+	// Get a list of the pods owned by our CRD
+	pods := &corev1.PodList{}
+	labelSet := map[string]string{
+		appLabel: appName,
+		rpaLabel: rpa.Name,
+	}
+	fieldSet := map[string]string{
+		"status.phase": "Running",
+	}
+	opts := &client.ListOptions{
+		Namespace:     rpa.Namespace,
+		LabelSelector: labels.SelectorFromSet(labelSet),
+		FieldSelector: fields.SelectorFromSet(fieldSet),
+	}
+	err := r.List(context.TODO(), opts, pods)
+	if err != nil {
+		return err
+	}
+
+	diff := len(pods.Items) - rpa.Spec.Replicas
+	if diff == 0 {
+		// No action needed
+		log.Printf("Current number of pods equals actual debuger of pods (%d)\n", rpa.Spec.Replicas)
+		return nil
+	}
+
+	if diff < 0 {
+		// Not enough replicas - create
+		err = r.createPods(rpa, -diff)
+		if err != nil {
+			return err
+		}
+	}
+	if diff > 0 {
+		// Too many replicas - delete
+		err = r.deletePods(pods.DeepCopy(), diff)
+		if err != nil {
+			return err
+		}
+	}
+
+	//TODO: handle version changes
+
+	return nil
+}
+
+func (r *ReconcileRandomParagraphApp) handleService(rpa *randomv1alpha1.RandomParagraphApp) error {
+	serviceName := rpa.Name + "-svc"
+
+	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name + "-deployment",
-			Namespace: instance.Namespace,
+			Name:      serviceName,
+			Namespace: rpa.Namespace,
+			Labels:    map[string]string{appLabel: appName, rpaLabel: rpa.Name},
 		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"deployment": instance.Name + "-deployment"},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"deployment": instance.Name + "-deployment"}},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "nginx",
-							Image: "nginx",
-						},
-					},
+		Spec: corev1.ServiceSpec{
+			Selector: map[string]string{appLabel: appName, rpaLabel: rpa.Name},
+			Type:     corev1.ServiceTypeNodePort,
+			Ports: []corev1.ServicePort{
+				corev1.ServicePort{
+					Protocol:   corev1.ProtocolTCP,
+					Port:       80,
+					TargetPort: intstr.FromInt(8080),
 				},
 			},
 		},
 	}
-	if err := controllerutil.SetControllerReference(instance, deploy, r.scheme); err != nil {
-		return reconcile.Result{}, err
+	if err := controllerutil.SetControllerReference(rpa, service, r.scheme); err != nil {
+		return err
 	}
 
-	// TODO(user): Change this for the object type created by your controller
-	// Check if the Deployment already exists
-	found := &appsv1.Deployment{}
-	err = r.Get(context.TODO(), types.NamespacedName{Name: deploy.Name, Namespace: deploy.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		log.Printf("Creating Deployment %s/%s\n", deploy.Namespace, deploy.Name)
-		err = r.Create(context.TODO(), deploy)
-		if err != nil {
-			return reconcile.Result{}, err
+	// Does the service already exist
+	serviceFound := &corev1.Service{}
+	err := r.Get(context.TODO(), types.NamespacedName{Name: serviceName, Namespace: rpa.Namespace}, serviceFound)
+	if err != nil {
+		if errors.IsNotFound(err) {
+			log.Printf("Creating Service %s/%s\n", service.Namespace, service.Name)
+			return r.Create(context.TODO(), service)
 		}
-	} else if err != nil {
-		return reconcile.Result{}, err
+		return err
 	}
 
-	// TODO(user): Change this for the object type created by your controller
-	// Update the found object and write the result back if there are any changes
-	if !reflect.DeepEqual(deploy.Spec, found.Spec) {
-		found.Spec = deploy.Spec
-		log.Printf("Updating Deployment %s/%s\n", deploy.Namespace, deploy.Name)
-		err = r.Update(context.TODO(), found)
+	// If the service was found update it if required
+	/*if !reflect.DeepEqual(service.Spec, serviceFound.Spec) {
+		serviceFound.Spec.Selector = service.Spec.Selector
+		serviceFound.Spec.Type = service.Spec.Type
+		serviceFound.Spec.Ports = service.Spec.Ports
+		log.Printf("Updating Service %s/%s\n", service.Namespace, service.Name)
+		err = r.Update(context.TODO(), serviceFound)
 		if err != nil {
-			return reconcile.Result{}, err
+			return err
 		}
+	}*/
+
+	return nil
+
+}
+
+func (r *ReconcileRandomParagraphApp) createPods(rpa *randomv1alpha1.RandomParagraphApp, numberToCreate int) error {
+	for i := 0; i < numberToCreate; i++ {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: rpa.Name + "-",
+				Namespace:    rpa.Namespace,
+				Labels: map[string]string{
+					appLabel: appName,
+					rpaLabel: rpa.Name,
+				},
+			},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{corev1.Container{
+					Name:  "random-paragraph",
+					Image: "richardcase/itsrandom:" + rpa.Spec.Version,
+					Ports: []corev1.ContainerPort{corev1.ContainerPort{
+						Name:          "http",
+						Protocol:      corev1.ProtocolTCP,
+						ContainerPort: 8080,
+					}},
+				}},
+			},
+		}
+		if err := controllerutil.SetControllerReference(rpa, pod, r.scheme); err != nil {
+			return err
+		}
+
+		log.Printf("Creating Pod \n")
+		err := r.Create(context.TODO(), pod)
+		if err != nil {
+			return err
+		}
+
+		//NOTE: ideally you'd wait until the pod was created before moving on
 	}
-	return reconcile.Result{}, nil
+
+	return nil
+}
+
+func (r *ReconcileRandomParagraphApp) deletePods(podsList *corev1.PodList, numberToDelete int) error {
+
+	sort.Slice(podsList.Items, func(i, j int) bool {
+		return podsList.Items[i].CreationTimestamp.Before(&podsList.Items[j].CreationTimestamp)
+	})
+
+	for i := 0; i < numberToDelete; i++ {
+		podToDelete := podsList.Items[i].DeepCopy()
+
+		log.Printf("Deleting Pod %s/%s\n", podToDelete.Namespace, podToDelete.Name)
+		err := r.Delete(context.TODO(), podToDelete)
+		if err != nil {
+			return err
+		}
+
+		//NOTE: ideally you'd wait until the pod was created before moving on
+	}
+	return nil
 }

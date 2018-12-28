@@ -6,4 +6,4 @@ metadata:
   name: randomparagraphapp-test
 spec:
   version: 0.0.1
-  replicas: 3
+  replicas: 1
