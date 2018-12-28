@@ -20,7 +20,6 @@ import (
 
 	"github.com/richardcase/itsrandomoperator/pkg/apis"
 	"github.com/richardcase/itsrandomoperator/pkg/controller"
-	"github.com/richardcase/itsrandomoperator/pkg/webhook"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -61,12 +60,6 @@ func main() {
 	log.Info("Setting up controller")
 	if err := controller.AddToManager(mgr); err != nil {
 		log.Error(err, "unable to register controllers to the manager")
-		os.Exit(1)
-	}
-
-	log.Info("setting up webhooks")
-	if err := webhook.AddToManager(mgr); err != nil {
-		log.Error(err, "unable to register webhooks to the manager")
 		os.Exit(1)
 	}
 

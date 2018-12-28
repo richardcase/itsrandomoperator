@@ -5,10 +5,9 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
-  - admissionregistration.k8s.io
+  - apps
   resources:
-  - mutatingwebhookconfigurations
-  - validatingwebhookconfigurations
+  - deployments
   verbs:
   - get
   - list
@@ -18,21 +17,9 @@ rules:
   - patch
   - delete
 - apiGroups:
-  - ""
+  - random.acme.com
   resources:
-  - secrets
-  verbs:
-  - get
-  - list
-  - watch
-  - create
-  - update
-  - patch
-  - delete
-- apiGroups:
-  - ""
-  resources:
-  - services
+  - randomparagraphapps
   verbs:
   - get
   - list

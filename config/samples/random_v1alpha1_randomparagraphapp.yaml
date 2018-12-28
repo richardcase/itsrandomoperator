@@ -1,0 +1,9 @@
+apiVersion: random.acme.com/v1alpha1
+kind: RandomParagraphApp
+metadata:
+  labels:
+    controller-tools.k8s.io: "1.0"
+  name: randomparagraphapp-test
+spec:
+  version: 0.0.1
+  replicas: 3
