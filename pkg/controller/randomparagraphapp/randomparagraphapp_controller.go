@@ -67,9 +67,17 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// TODO(user): Modify this to be the types you create
-	// Uncomment watch a Deployment created by RandomParagraphApp - change this for objects you create
-	err = c.Watch(&source.Kind{Type: &appsv1.Deployment{}}, &handler.EnqueueRequestForOwner{
+	// Watch for changes to pods (owned by the RandomParagraphApp)
+	err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &randomv1alpha1.RandomParagraphApp{},
+	})
+	if err != nil {
+		return err
+	}
+
+	// Watch for changes to services (owned by the RandomParagraphApp)
+	err = c.Watch(&source.Kind{Type: &corev1.Service{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
 		OwnerType:    &randomv1alpha1.RandomParagraphApp{},
 	})
@@ -93,7 +101,8 @@ type ReconcileRandomParagraphApp struct {
 // TODO(user): Modify this Reconcile function to implement your Controller logic.  The scaffolding writes
 // a Deployment as an example
 // Automatically generate RBAC rules to allow the Controller to read and write Deployments
-// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=,resources=pods,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=random.acme.com,resources=randomparagraphapps,verbs=get;list;watch;create;update;patch;delete
 func (r *ReconcileRandomParagraphApp) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	// Fetch the RandomParagraphApp instance
