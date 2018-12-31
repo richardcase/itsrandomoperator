@@ -17,8 +17,10 @@ package randomparagraphapp
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
+	"time"
 
 	randomv1alpha1 "github.com/richardcase/itsrandomoperator/pkg/apis/random/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -42,12 +44,13 @@ const (
 	appName  = "random-paragraph-ws"
 	appLabel = "app"
 	rpaLabel = "rpa-name"
-)
 
-/**
-* USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
-* business logic.  Delete these comments after modifying this file.*
- */
+	// NOTE: Ideally you'd make this configurable
+	podDeletionTimeout  = 3 * time.Minute
+	podReadinessTimeout = 5 * time.Minute
+
+	pollInterval = 30 * time.Second
+)
 
 // Add creates a new RandomParagraphApp Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -93,9 +96,10 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	//mgr.GetCache().IndexField(&corev1.Pod{}, "status.phase", func(obj runtime.Object) []string {
-	//	pod := obj.(corev1.Pod)
-	//})
+	mgr.GetCache().IndexField(&corev1.Pod{}, "status.phase", func(obj runtime.Object) []string {
+		pod := obj.(*corev1.Pod)
+		return []string{string(pod.Status.Phase)}
+	})
 
 	return nil
 }
@@ -170,7 +174,7 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 
 	if diff < 0 {
 		// Not enough replicas - create
-		err = r.createPods(rpa, -diff)
+		err = r.createPods(rpa, -diff, pods)
 		if err != nil {
 			return err
 		}
@@ -240,12 +244,28 @@ func (r *ReconcileRandomParagraphApp) handleService(rpa *randomv1alpha1.RandomPa
 
 }
 
-func (r *ReconcileRandomParagraphApp) createPods(rpa *randomv1alpha1.RandomParagraphApp, numberToCreate int) error {
+func (r *ReconcileRandomParagraphApp) createPods(rpa *randomv1alpha1.RandomParagraphApp, numberToCreate int, existingPods *corev1.PodList) error {
+	// Get the names of the existing pods
+	existingNames := make([]string, len(existingPods.Items))
+	for _, existingPod := range existingPods.Items {
+		existingNames = append(existingNames, existingPod.Name)
+	}
+
+	maxPods := len(existingPods.Items) + numberToCreate
 	for i := 0; i < numberToCreate; i++ {
+		// For each pod get the next available name
+		var name string
+		for i := 1; i <= maxPods; i++ {
+			name = fmt.Sprintf("%s-%x", rpa.Name, i)
+			if !ContainsString(existingNames, name) {
+				break
+			}
+		}
+
 		pod := &corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
-				GenerateName: rpa.Name + "-",
-				Namespace:    rpa.Namespace,
+				Name:      name,
+				Namespace: rpa.Namespace,
 				Labels: map[string]string{
 					appLabel: appName,
 					rpaLabel: rpa.Name,
@@ -267,13 +287,21 @@ func (r *ReconcileRandomParagraphApp) createPods(rpa *randomv1alpha1.RandomParag
 			return err
 		}
 
-		log.Printf("Creating Pod \n")
+		log.Printf("creating Pod %s/%s\n", pod.Namespace, pod.Name)
 		err := r.Create(context.TODO(), pod)
 		if err != nil {
 			return err
 		}
 
-		//NOTE: ideally you'd wait until the pod was created before moving on
+		log.Printf("waiting for pod %s to be ready\n", pod.Name)
+		ctx, fn := context.WithTimeout(context.Background(), podReadinessTimeout)
+		defer fn()
+		if err := r.waitForPodReady(ctx, pod); err != nil {
+			return err
+		}
+		log.Printf("pod %s became ready\n", pod.Name)
+
+		existingNames = append(existingNames, pod.Name)
 	}
 
 	return nil
@@ -294,7 +322,63 @@ func (r *ReconcileRandomParagraphApp) deletePods(podsList *corev1.PodList, numbe
 			return err
 		}
 
-		//NOTE: ideally you'd wait until the pod was created before moving on
+		log.Printf("waiting for pod %s to be deleted\n", podToDelete.Name)
+		ctx, fn := context.WithTimeout(context.Background(), podDeletionTimeout)
+		defer fn()
+		if err := r.waitForPodDeletion(ctx, podToDelete); err != nil {
+			return err
+		}
+		log.Printf("pod %s became ready\n", podToDelete.Name)
 	}
 	return nil
+}
+
+func (r *ReconcileRandomParagraphApp) waitForPodReady(ctx context.Context, pod *corev1.Pod) error {
+	tick := time.Tick(500 * time.Millisecond)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for pod %s to become ready", pod.Name)
+		case <-tick:
+			podFound := &corev1.Pod{}
+			err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, podFound)
+			if err != nil {
+				return err
+			}
+			if podFound.Status.Phase == corev1.PodRunning && podFound.Status.PodIP != "" {
+				return nil
+			}
+		}
+	}
+}
+
+func (r *ReconcileRandomParagraphApp) waitForPodDeletion(ctx context.Context, pod *corev1.Pod) error {
+	tick := time.Tick(500 * time.Millisecond)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timeout waiting for pod %s to be deleted", pod.Name)
+		case <-tick:
+			podFound := &corev1.Pod{}
+			err := r.Get(ctx, types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, podFound)
+			if err != nil {
+				return err
+			}
+			if podFound.DeletionTimestamp != nil {
+				return nil
+			}
+		}
+	}
+}
+
+// ContainsString checks if a string is contained in a slice
+func ContainsString(sl []string, v string) bool {
+	for _, vv := range sl {
+		if vv == v {
+			return true
+		}
+	}
+	return false
 }
