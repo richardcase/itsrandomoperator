@@ -18,15 +18,14 @@ package randomparagraphapp
 import (
 	"context"
 	"fmt"
-	"log"
 	"sort"
 	"time"
 
+	"github.com/go-logr/logr"
 	randomv1alpha1 "github.com/richardcase/itsrandomoperator/pkg/apis/random/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
@@ -61,7 +61,8 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	return &ReconcileRandomParagraphApp{Client: mgr.GetClient(), scheme: mgr.GetScheme()}
+	log := logf.Log.WithName("rpa-controller")
+	return &ReconcileRandomParagraphApp{Client: mgr.GetClient(), scheme: mgr.GetScheme(), logger: log}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
@@ -96,10 +97,10 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	mgr.GetCache().IndexField(&corev1.Pod{}, "status.phase", func(obj runtime.Object) []string {
+	/*mgr.GetCache().IndexField(&corev1.Pod{}, "status.phase", func(obj runtime.Object) []string {
 		pod := obj.(*corev1.Pod)
 		return []string{string(pod.Status.Phase)}
-	})
+	})*/
 
 	return nil
 }
@@ -110,6 +111,7 @@ var _ reconcile.Reconciler = &ReconcileRandomParagraphApp{}
 type ReconcileRandomParagraphApp struct {
 	client.Client
 	scheme *runtime.Scheme
+	logger logr.Logger
 }
 
 // Reconcile reads that state of the cluster for a RandomParagraphApp object and makes changes based on the state read
@@ -152,13 +154,13 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 		appLabel: appName,
 		rpaLabel: rpa.Name,
 	}
-	fieldSet := map[string]string{
-		"status.phase": "Running",
-	}
+	//fieldSet := map[string]string{
+	//	"status.phase": "Running",
+	//}
 	opts := &client.ListOptions{
 		Namespace:     rpa.Namespace,
 		LabelSelector: labels.SelectorFromSet(labelSet),
-		FieldSelector: fields.SelectorFromSet(fieldSet),
+		//FieldSelector: fields.SelectorFromSet(fieldSet),
 	}
 	err := r.List(context.TODO(), opts, pods)
 	if err != nil {
@@ -168,7 +170,7 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 	diff := len(pods.Items) - rpa.Spec.Replicas
 	if diff == 0 {
 		// No action needed
-		log.Printf("Current number of pods equals actual debuger of pods (%d)\n", rpa.Spec.Replicas)
+		r.logger.Info("current number of pods equals actual number of pods", "runningpods", rpa.Spec.Replicas)
 		return nil
 	}
 
@@ -222,7 +224,7 @@ func (r *ReconcileRandomParagraphApp) handleService(rpa *randomv1alpha1.RandomPa
 	err := r.Get(context.TODO(), types.NamespacedName{Name: serviceName, Namespace: rpa.Namespace}, serviceFound)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			log.Printf("Creating Service %s/%s\n", service.Namespace, service.Name)
+			r.logger.Info("creating service", "name", serviceName, "namespace", service.Namespace)
 			return r.Create(context.TODO(), service)
 		}
 		return err
@@ -287,19 +289,19 @@ func (r *ReconcileRandomParagraphApp) createPods(rpa *randomv1alpha1.RandomParag
 			return err
 		}
 
-		log.Printf("creating Pod %s/%s\n", pod.Namespace, pod.Name)
+		r.logger.Info("creating pod", "name", pod.Name, "namespace", pod.Namespace)
 		err := r.Create(context.TODO(), pod)
 		if err != nil {
 			return err
 		}
 
-		log.Printf("waiting for pod %s to be ready\n", pod.Name)
+		r.logger.Info("waiting for pod to be ready", "name", pod.Name, "namespace", pod.Namespace, "timeout", podReadinessTimeout)
 		ctx, fn := context.WithTimeout(context.Background(), podReadinessTimeout)
 		defer fn()
 		if err := r.waitForPodReady(ctx, pod); err != nil {
 			return err
 		}
-		log.Printf("pod %s became ready\n", pod.Name)
+		r.logger.Info("pod became ready", "name", pod.Name, "namespace", pod.Namespace)
 
 		existingNames = append(existingNames, pod.Name)
 	}
@@ -316,19 +318,19 @@ func (r *ReconcileRandomParagraphApp) deletePods(podsList *corev1.PodList, numbe
 	for i := 0; i < numberToDelete; i++ {
 		podToDelete := podsList.Items[i].DeepCopy()
 
-		log.Printf("Deleting Pod %s/%s\n", podToDelete.Namespace, podToDelete.Name)
-		err := r.Delete(context.TODO(), podToDelete)
+		r.logger.Info("deleting pod", "name", podToDelete.Name, "namespace", podToDelete.Namespace)
+		err := r.Delete(context.TODO(), podToDelete, client.GracePeriodSeconds(1))
 		if err != nil {
 			return err
 		}
 
-		log.Printf("waiting for pod %s to be deleted\n", podToDelete.Name)
+		r.logger.Info("waiting for pod to be deleted", "name", podToDelete.Name, "namespace", podToDelete.Namespace, "timeout", podDeletionTimeout)
 		ctx, fn := context.WithTimeout(context.Background(), podDeletionTimeout)
 		defer fn()
 		if err := r.waitForPodDeletion(ctx, podToDelete); err != nil {
 			return err
 		}
-		log.Printf("pod %s became ready\n", podToDelete.Name)
+		r.logger.Info("pod deleted", "name", podToDelete.Name, "namespace", podToDelete.Namespace)
 	}
 	return nil
 }
@@ -366,7 +368,7 @@ func (r *ReconcileRandomParagraphApp) waitForPodDeletion(ctx context.Context, po
 			if err != nil {
 				return err
 			}
-			if podFound.DeletionTimestamp != nil {
+			if podFound.DeletionTimestamp != nil && time.Now().After(podFound.DeletionTimestamp.Time) {
 				return nil
 			}
 		}
