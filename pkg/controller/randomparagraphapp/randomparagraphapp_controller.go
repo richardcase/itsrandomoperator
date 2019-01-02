@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -54,7 +55,6 @@ const (
 
 // Add creates a new RandomParagraphApp Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-// USER ACTION REQUIRED: update cmd/manager/main.go to call this random.Add(mgr) to install this Controller
 func Add(mgr manager.Manager) error {
 	return add(mgr, newReconciler(mgr))
 }
@@ -96,11 +96,6 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	if err != nil {
 		return err
 	}
-
-	/*mgr.GetCache().IndexField(&corev1.Pod{}, "status.phase", func(obj runtime.Object) []string {
-		pod := obj.(*corev1.Pod)
-		return []string{string(pod.Status.Phase)}
-	})*/
 
 	return nil
 }
@@ -154,13 +149,9 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 		appLabel: appName,
 		rpaLabel: rpa.Name,
 	}
-	//fieldSet := map[string]string{
-	//	"status.phase": "Running",
-	//}
 	opts := &client.ListOptions{
 		Namespace:     rpa.Namespace,
 		LabelSelector: labels.SelectorFromSet(labelSet),
-		//FieldSelector: fields.SelectorFromSet(fieldSet),
 	}
 	err := r.List(context.TODO(), opts, pods)
 	if err != nil {
@@ -171,7 +162,6 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 	if diff == 0 {
 		// No action needed
 		r.logger.Info("current number of pods equals actual number of pods", "runningpods", rpa.Spec.Replicas)
-		return nil
 	}
 
 	if diff < 0 {
@@ -189,7 +179,11 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 		}
 	}
 
-	//TODO: handle version changes
+	// Check if we need to upgrade the existing pods
+	err = r.tryUpgradePods(rpa, pods)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
@@ -332,6 +326,44 @@ func (r *ReconcileRandomParagraphApp) deletePods(podsList *corev1.PodList, numbe
 		}
 		r.logger.Info("pod deleted", "name", podToDelete.Name, "namespace", podToDelete.Namespace)
 	}
+	return nil
+}
+
+func (r *ReconcileRandomParagraphApp) tryUpgradePods(rpa *randomv1alpha1.RandomParagraphApp, existingPods *corev1.PodList) error {
+	for _, pod := range existingPods.Items {
+		imageParts := strings.Split(pod.Spec.Containers[0].Image, ":")
+		if imageParts[1] != rpa.Spec.Version {
+			// We need to upgrade a pod
+			r.logger.Info("upgrading image version for pod", "name", pod.Name, "namespace", pod.Namespace, "oldversion", imageParts[1], "newversion", rpa.Spec.Version)
+			err := r.upgradePod(&pod, rpa.Spec.Version)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (r *ReconcileRandomParagraphApp) upgradePod(pod *corev1.Pod, version string) error {
+	newVersion := "richardcase/itsrandom:" + version
+
+	r.logger.Info("updating pod image", "name", pod.Name, "namespace", pod.Namespace, "image", newVersion)
+
+	pod.Spec.Containers[0].Image = newVersion
+
+	err := r.Update(context.TODO(), pod)
+	if err != nil {
+		return err
+	}
+
+	r.logger.Info("waiting for pod to be ready", "name", pod.Name, "namespace", pod.Namespace, "timeout", podReadinessTimeout)
+	ctx, fn := context.WithTimeout(context.Background(), podReadinessTimeout)
+	defer fn()
+	if err := r.waitForPodReady(ctx, pod); err != nil {
+		return err
+	}
+	r.logger.Info("pod became ready", "name", pod.Name, "namespace", pod.Namespace)
+
 	return nil
 }
 
