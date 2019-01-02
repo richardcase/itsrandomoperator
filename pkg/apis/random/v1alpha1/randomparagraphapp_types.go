@@ -39,7 +39,7 @@ type RandomParagraphAppSpec struct {
 // RandomParagraphAppStatus defines the observed state of RandomParagraphApp
 type RandomParagraphAppStatus struct {
 	// Conditions keeps a record of the last 20 application conditions
-	Conditions []ApplicationCondition `json:"conditions"`
+	Conditions []ApplicationCondition `json:"conditions,omitempty"`
 	// Replicas is the current number of replicas
 	//+kubebuilder:validation:Minimum=0
 	Replicas int `json:"replicas"`

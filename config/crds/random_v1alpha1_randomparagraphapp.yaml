@@ -40,6 +40,30 @@ spec:
               type: string
           type: object
         status:
+          properties:
+            conditions:
+              description: Conditions keeps a record of the last 20 application conditions
+              items:
+                properties:
+                  reason:
+                    type: string
+                  time:
+                    type: string
+                  type:
+                    type: string
+                required:
+                - type
+                - reason
+                - time
+                type: object
+              type: array
+            replicas:
+              description: Replicas is the current number of replicas
+              format: int64
+              minimum: 0
+              type: integer
+          required:
+          - replicas
           type: object
   version: v1alpha1
 status:
