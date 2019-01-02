@@ -139,6 +139,13 @@ func (r *ReconcileRandomParagraphApp) Reconcile(request reconcile.Request) (reco
 		return reconcile.Result{}, err
 	}
 
+	// Set the status and update
+	instance.Status.SetReadyCondition()
+	err = r.Update(context.TODO(), instance)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
 	return reconcile.Result{}, nil
 }
 
@@ -170,6 +177,8 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 		if err != nil {
 			return err
 		}
+		// Add a scale condition
+		rpa.Status.SetScaleCondition(len(pods.Items), rpa.Spec.Replicas)
 	}
 	if diff > 0 {
 		// Too many replicas - delete
@@ -177,12 +186,20 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 		if err != nil {
 			return err
 		}
+		// Add a scale condition
+		rpa.Status.SetScaleCondition(len(pods.Items), rpa.Spec.Replicas)
 	}
 
+	// Set the number of replicas
+	rpa.Status.Replicas = rpa.Spec.Replicas
+
 	// Check if we need to upgrade the existing pods
-	err = r.tryUpgradePods(rpa, pods)
+	numUpdated, err := r.tryUpgradePods(rpa, pods)
 	if err != nil {
 		return err
+	}
+	if numUpdated > 0 {
+		rpa.Status.SetUpgradedCondition(numUpdated, rpa.Spec.Version)
 	}
 
 	return nil
@@ -316,10 +333,12 @@ func (r *ReconcileRandomParagraphApp) deletePods(podsList *corev1.PodList, numbe
 		}
 		r.logger.Info("pod deleted", "name", podToDelete.Name, "namespace", podToDelete.Namespace)
 	}
+
 	return nil
 }
 
-func (r *ReconcileRandomParagraphApp) tryUpgradePods(rpa *randomv1alpha1.RandomParagraphApp, existingPods *corev1.PodList) error {
+func (r *ReconcileRandomParagraphApp) tryUpgradePods(rpa *randomv1alpha1.RandomParagraphApp, existingPods *corev1.PodList) (int, error) {
+	numUpdated := 0
 	for _, pod := range existingPods.Items {
 		imageParts := strings.Split(pod.Spec.Containers[0].Image, ":")
 		if imageParts[1] != rpa.Spec.Version {
@@ -327,11 +346,12 @@ func (r *ReconcileRandomParagraphApp) tryUpgradePods(rpa *randomv1alpha1.RandomP
 			r.logger.Info("upgrading image version for pod", "name", pod.Name, "namespace", pod.Namespace, "oldversion", imageParts[1], "newversion", rpa.Spec.Version)
 			err := r.upgradePod(&pod, rpa.Spec.Version)
 			if err != nil {
-				return err
+				return 0, err
 			}
+			numUpdated++
 		}
 	}
-	return nil
+	return numUpdated, nil
 }
 
 func (r *ReconcileRandomParagraphApp) upgradePod(pod *corev1.Pod, version string) error {

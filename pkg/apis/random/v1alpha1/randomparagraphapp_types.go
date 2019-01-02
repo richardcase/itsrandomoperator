@@ -16,11 +16,15 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"fmt"
+	"time"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+func init() {
+	SchemeBuilder.Register(&RandomParagraphApp{}, &RandomParagraphAppList{})
+}
 
 // RandomParagraphAppSpec defines the desired state of RandomParagraphApp
 type RandomParagraphAppSpec struct {
@@ -34,8 +38,11 @@ type RandomParagraphAppSpec struct {
 
 // RandomParagraphAppStatus defines the observed state of RandomParagraphApp
 type RandomParagraphAppStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// Conditions keeps a record of the last 20 application conditions
+	Conditions []ApplicationCondition `json:"conditions"`
+	// Replicas is the current number of replicas
+	//+kubebuilder:validation:Minimum=0
+	Replicas int `json:"replicas"`
 }
 
 // +genclient
@@ -60,6 +67,62 @@ type RandomParagraphAppList struct {
 	Items           []RandomParagraphApp `json:"items"`
 }
 
-func init() {
-	SchemeBuilder.Register(&RandomParagraphApp{}, &RandomParagraphAppList{})
+type ApplicationCondition struct {
+	Type   ApplicationConditionType `json:"type"`
+	Reason string                   `json:"reason"`
+	Time   string                   `json:"time"`
+}
+
+type ApplicationConditionType string
+
+const (
+	ApplicationConditionReady     = "Ready"
+	ApplicationConditionScale     = "Scale"
+	ApplicationConditionUpgrading = "Upgrading"
+)
+
+func (rs *RandomParagraphAppStatus) SetScaleCondition(from, to int) {
+	c := ApplicationCondition{
+		Type:   ApplicationConditionScale,
+		Reason: fmt.Sprintf("scaled pods from %d to %d", from, to),
+		Time:   time.Now().Format(time.RFC3339),
+	}
+	rs.appendCondition(c)
+}
+
+func (rs *RandomParagraphAppStatus) SetReadyCondition() {
+	c := ApplicationCondition{
+		Type:   ApplicationConditionReady,
+		Reason: "current state matches desired state",
+		Time:   time.Now().Format(time.RFC3339),
+	}
+
+	if len(rs.Conditions) == 0 {
+		rs.appendCondition(c)
+		return
+	}
+
+	last := rs.Conditions[len(rs.Conditions)-1]
+	if last.Type == ApplicationConditionReady {
+		// Do nothing if the last status is already Ready
+		return
+	}
+
+	rs.appendCondition(c)
+}
+
+func (rs *RandomParagraphAppStatus) SetUpgradedCondition(numberUpdated int, version string) {
+	c := ApplicationCondition{
+		Type:   ApplicationConditionUpgrading,
+		Reason: fmt.Sprintf("upgraded %d pods to %s", numberUpdated, version),
+		Time:   time.Now().Format(time.RFC3339),
+	}
+	rs.appendCondition(c)
+}
+
+func (rs *RandomParagraphAppStatus) appendCondition(c ApplicationCondition) {
+	rs.Conditions = append(rs.Conditions, c)
+	if len(rs.Conditions) > 20 {
+		rs.Conditions = rs.Conditions[1:]
+	}
 }
