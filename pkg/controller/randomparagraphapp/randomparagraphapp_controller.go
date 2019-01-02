@@ -224,17 +224,7 @@ func (r *ReconcileRandomParagraphApp) handleService(rpa *randomv1alpha1.RandomPa
 		return err
 	}
 
-	// If the service was found update it if required
-	/*if !reflect.DeepEqual(service.Spec, serviceFound.Spec) {
-		serviceFound.Spec.Selector = service.Spec.Selector
-		serviceFound.Spec.Type = service.Spec.Type
-		serviceFound.Spec.Ports = service.Spec.Ports
-		log.Printf("Updating Service %s/%s\n", service.Namespace, service.Name)
-		err = r.Update(context.TODO(), serviceFound)
-		if err != nil {
-			return err
-		}
-	}*/
+	//NOTE: if already existing you could check if an update is required
 
 	return nil
 
@@ -346,11 +336,9 @@ func (r *ReconcileRandomParagraphApp) tryUpgradePods(rpa *randomv1alpha1.RandomP
 
 func (r *ReconcileRandomParagraphApp) upgradePod(pod *corev1.Pod, version string) error {
 	newVersion := "richardcase/itsrandom:" + version
-
 	r.logger.Info("updating pod image", "name", pod.Name, "namespace", pod.Namespace, "image", newVersion)
 
 	pod.Spec.Containers[0].Image = newVersion
-
 	err := r.Update(context.TODO(), pod)
 	if err != nil {
 		return err
