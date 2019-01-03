@@ -37,7 +37,7 @@ var expectedRequest = reconcile.Request{NamespacedName: types.NamespacedName{Nam
 var svcKey = types.NamespacedName{Name: "foo-svc", Namespace: "default"}
 var podKey = types.NamespacedName{Name: "foo-1", Namespace: "default"}
 
-const timeout = time.Second * 5
+const timeout = time.Second * 30
 
 func TestReconcile(t *testing.T) {
 	g := gomega.NewGomegaWithT(t)
