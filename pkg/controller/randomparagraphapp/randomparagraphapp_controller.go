@@ -31,9 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	intstr "k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/client-go/kubernetes/scheme"
+
 	"k8s.io/client-go/tools/record"
-	"k8s.io/client-go/tools/reference"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -252,6 +251,8 @@ func (r *ReconcileRandomParagraphApp) handleService(rpa *randomv1alpha1.RandomPa
 			errCreate := r.Create(context.TODO(), service)
 			if errCreate == nil {
 				r.postInfoEvent(rpa, "ServiceCreated", fmt.Sprintf("created %s/%s", serviceName, rpa.Namespace))
+				//TODO: change the below to watch for create events
+				time.Sleep(20 * time.Second)
 			}
 			return errCreate
 		}
@@ -436,15 +437,8 @@ func (r *ReconcileRandomParagraphApp) waitForPodDeletion(ctx context.Context, po
 	}
 }
 
-func (r *ReconcileRandomParagraphApp) postInfoEvent(obj runtime.Object, reason, message string) {
-	ref, err := reference.GetReference(scheme.Scheme, obj)
-	if err != nil {
-		groupKind := obj.GetObjectKind().GroupVersionKind()
-		r.logger.Error(err, "could not get reference for runtime object to raise event", "kind", groupKind.Kind, "group", groupKind.Group, "version", groupKind.Version)
-		return
-	}
-
-	r.recorder.Event(ref, corev1.EventTypeNormal, reason, message)
+func (r *ReconcileRandomParagraphApp) postInfoEvent(rpa *randomv1alpha1.RandomParagraphApp, reason, message string) {
+	r.recorder.Event(rpa, corev1.EventTypeNormal, reason, message)
 }
 
 // ContainsString checks if a string is contained in a slice
