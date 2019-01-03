@@ -31,6 +31,12 @@ func main() {
 	logf.SetLogger(logf.ZapLogger(false))
 	log := logf.Log.WithName("entrypoint")
 
+	namespace := os.Getenv("POD_NAMESPACE")
+	if len(namespace) == 0 {
+		log.Info("must set env POD_NAMESPACE")
+		return
+	}
+
 	// Get a config to talk to the apiserver
 	log.Info("setting up client for manager")
 	cfg, err := config.GetConfig()
@@ -41,7 +47,11 @@ func main() {
 
 	// Create a new Cmd to provide shared dependencies and start components
 	log.Info("setting up manager")
-	mgr, err := manager.New(cfg, manager.Options{})
+	mgr, err := manager.New(cfg, manager.Options{
+		LeaderElection:          true,
+		LeaderElectionID:        "rpa-operator",
+		LeaderElectionNamespace: namespace,
+	})
 	if err != nil {
 		log.Error(err, "unable to set up overall controller manager")
 		os.Exit(1)
