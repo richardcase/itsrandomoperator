@@ -31,6 +31,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	intstr "k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/reference"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -45,6 +48,8 @@ const (
 	appName  = "random-paragraph-ws"
 	appLabel = "app"
 	rpaLabel = "rpa-name"
+
+	controllerName = "randomparagraphapp-controller"
 
 	// NOTE: Ideally you'd make this configurable
 	podDeletionTimeout  = 3 * time.Minute
@@ -61,14 +66,20 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	log := logf.Log.WithName("rpa-controller")
-	return &ReconcileRandomParagraphApp{Client: mgr.GetClient(), scheme: mgr.GetScheme(), logger: log}
+	log := logf.Log.WithName(controllerName)
+	recorder := mgr.GetRecorder(controllerName)
+
+	return &ReconcileRandomParagraphApp{
+		Client:   mgr.GetClient(),
+		scheme:   mgr.GetScheme(),
+		logger:   log,
+		recorder: recorder}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
 func add(mgr manager.Manager, r reconcile.Reconciler) error {
 	// Create a new controller
-	c, err := controller.New("randomparagraphapp-controller", mgr, controller.Options{Reconciler: r})
+	c, err := controller.New(controllerName, mgr, controller.Options{Reconciler: r})
 	if err != nil {
 		return err
 	}
@@ -105,8 +116,9 @@ var _ reconcile.Reconciler = &ReconcileRandomParagraphApp{}
 // ReconcileRandomParagraphApp reconciles a RandomParagraphApp object
 type ReconcileRandomParagraphApp struct {
 	client.Client
-	scheme *runtime.Scheme
-	logger logr.Logger
+	scheme   *runtime.Scheme
+	logger   logr.Logger
+	recorder record.EventRecorder
 }
 
 // Reconcile reads that state of the cluster for a RandomParagraphApp object and makes changes based on the state read
@@ -115,6 +127,7 @@ type ReconcileRandomParagraphApp struct {
 // +kubebuilder:rbac:groups=,resources=pods,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=random.acme.com,resources=randomparagraphapps,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=get;list;watch;create;update;patch;delete
 func (r *ReconcileRandomParagraphApp) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	// Fetch the RandomParagraphApp instance
 	instance := &randomv1alpha1.RandomParagraphApp{}
@@ -182,7 +195,7 @@ func (r *ReconcileRandomParagraphApp) handlePods(rpa *randomv1alpha1.RandomParag
 	}
 	if diff > 0 {
 		// Too many replicas - delete
-		err = r.deletePods(pods.DeepCopy(), diff)
+		err = r.deletePods(rpa, pods, diff)
 		if err != nil {
 			return err
 		}
@@ -236,7 +249,11 @@ func (r *ReconcileRandomParagraphApp) handleService(rpa *randomv1alpha1.RandomPa
 	if err != nil {
 		if errors.IsNotFound(err) {
 			r.logger.Info("creating service", "name", serviceName, "namespace", service.Namespace)
-			return r.Create(context.TODO(), service)
+			errCreate := r.Create(context.TODO(), service)
+			if errCreate == nil {
+				r.postInfoEvent(rpa, "ServiceCreated", fmt.Sprintf("created %s/%s", serviceName, rpa.Namespace))
+			}
+			return errCreate
 		}
 		return err
 	}
@@ -304,13 +321,15 @@ func (r *ReconcileRandomParagraphApp) createPods(rpa *randomv1alpha1.RandomParag
 		}
 		r.logger.Info("pod became ready", "name", pod.Name, "namespace", pod.Namespace)
 
+		r.postInfoEvent(rpa, "PodCreated", fmt.Sprintf("created %s/%s", pod.Name, pod.Namespace))
+
 		existingNames = append(existingNames, pod.Name)
 	}
 
 	return nil
 }
 
-func (r *ReconcileRandomParagraphApp) deletePods(podsList *corev1.PodList, numberToDelete int) error {
+func (r *ReconcileRandomParagraphApp) deletePods(rpa *randomv1alpha1.RandomParagraphApp, podsList *corev1.PodList, numberToDelete int) error {
 
 	sort.Slice(podsList.Items, func(i, j int) bool {
 		return podsList.Items[i].CreationTimestamp.Before(&podsList.Items[j].CreationTimestamp)
@@ -332,6 +351,7 @@ func (r *ReconcileRandomParagraphApp) deletePods(podsList *corev1.PodList, numbe
 			return err
 		}
 		r.logger.Info("pod deleted", "name", podToDelete.Name, "namespace", podToDelete.Namespace)
+		r.postInfoEvent(rpa, "PodDeleted", fmt.Sprintf("deleted %s/%s", podToDelete.Name, podToDelete.Namespace))
 	}
 
 	return nil
@@ -348,6 +368,7 @@ func (r *ReconcileRandomParagraphApp) tryUpgradePods(rpa *randomv1alpha1.RandomP
 			if err != nil {
 				return 0, err
 			}
+			r.postInfoEvent(rpa, "PodVersionChanged", fmt.Sprintf("pod %s/%s version now %s", pod.Name, pod.Namespace, rpa.Spec.Version))
 			numUpdated++
 		}
 	}
@@ -413,6 +434,17 @@ func (r *ReconcileRandomParagraphApp) waitForPodDeletion(ctx context.Context, po
 			}
 		}
 	}
+}
+
+func (r *ReconcileRandomParagraphApp) postInfoEvent(obj runtime.Object, reason, message string) {
+	ref, err := reference.GetReference(scheme.Scheme, obj)
+	if err != nil {
+		groupKind := obj.GetObjectKind().GroupVersionKind()
+		r.logger.Error(err, "could not get reference for runtime object to raise event", "kind", groupKind.Kind, "group", groupKind.Group, "version", groupKind.Version)
+		return
+	}
+
+	r.recorder.Event(ref, corev1.EventTypeNormal, reason, message)
 }
 
 // ContainsString checks if a string is contained in a slice
