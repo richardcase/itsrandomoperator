@@ -1,0 +1,3 @@
+version: "1"
+domain: acme.com
+repo: github.com/richardcase/itsrandomoperator
